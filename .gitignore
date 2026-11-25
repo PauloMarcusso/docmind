@@ -1,0 +1,24 @@
+# Secrets: only .env.example is versioned
+.env
+.env.*
+!.env.example
+
+# Local course notes and tool memory
+.notes/
+.remember/
+
+# Build output
+bin/
+*.exe
+*.test
+*.out
+
+# Python (rag-api, ingest-worker)
+__pycache__/
+*.pyc
+.venv/
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
