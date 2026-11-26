@@ -5,12 +5,26 @@ package main
 import (
 	"log"
 	"net/http"
+	"os"
 
 	"github.com/PauloMarcusso/docmind/gateway/internal/adapters/inbound/httpapi"
+	"github.com/PauloMarcusso/docmind/gateway/internal/adapters/outbound/memory"
+	"github.com/PauloMarcusso/docmind/gateway/internal/app"
+	"github.com/PauloMarcusso/docmind/gateway/internal/domain"
 )
 
 func main() {
-	router := httpapi.NewRouter()
+	apiKey := os.Getenv("GATEWAY_API_KEY")
+	if apiKey == "" {
+		log.Fatal("GATEWAY_API_KEY is required")
+	}
+
+	// Wiring goes from the outside in: outbound adapter -> use case -> inbound adapter.
+	store := memory.NewKeyStore(map[string]domain.Client{
+		apiKey: {ID: "dev"},
+	})
+	auth := app.NewAuthenticator(store)
+	router := httpapi.NewRouter(auth)
 
 	addr := ":8080"
 	log.Printf("gateway listening on %s", addr)
