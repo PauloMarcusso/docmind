@@ -3,7 +3,7 @@ package httpapi
 import (
 	"context"
 	"errors"
-	"log"
+	"log/slog"
 	"net/http"
 
 	"github.com/PauloMarcusso/docmind/gateway/internal/domain"
@@ -32,7 +32,7 @@ func requireAPIKey(auth Authenticator, next http.Handler) http.Handler {
 			return
 		}
 		if err != nil {
-			log.Printf("authenticate: %v", err)
+			slog.ErrorContext(r.Context(), "authenticate failed", "err", err)
 			writeJSON(w, http.StatusInternalServerError, errorResponse{Error: "internal error"})
 			return
 		}

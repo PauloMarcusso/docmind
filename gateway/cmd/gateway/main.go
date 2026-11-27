@@ -3,9 +3,15 @@
 package main
 
 import (
-	"log"
+	"context"
+	"errors"
+	"fmt"
+	"log/slog"
 	"net/http"
 	"os"
+	"os/signal"
+	"syscall"
+	"time"
 
 	"github.com/PauloMarcusso/docmind/gateway/internal/adapters/inbound/httpapi"
 	"github.com/PauloMarcusso/docmind/gateway/internal/adapters/outbound/memory"
@@ -13,22 +19,61 @@ import (
 	"github.com/PauloMarcusso/docmind/gateway/internal/domain"
 )
 
+// main only runs the gateway and turns a failure into exit code 1.
+// os.Exit skips deferred calls, so it stays here and never inside run.
 func main() {
-	apiKey := os.Getenv("GATEWAY_API_KEY")
-	if apiKey == "" {
-		log.Fatal("GATEWAY_API_KEY is required")
+	if err := run(context.Background(), os.Getenv); err != nil {
+		slog.Error("gateway failed", "err", err)
+		os.Exit(1)
 	}
+}
+
+// run loads the config, wires the adapters and serves HTTP until the process
+// gets SIGINT or SIGTERM, then shuts down gracefully within cfg.ShutdownTimeout.
+func run(ctx context.Context, getenv func(string) string) error {
+	cfg, err := loadConfig(getenv)
+	if err != nil {
+		return fmt.Errorf("load config: %w", err)
+	}
+
+	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: cfg.LogLevel})))
 
 	// Wiring goes from the outside in: outbound adapter -> use case -> inbound adapter.
 	store := memory.NewKeyStore(map[string]domain.Client{
-		apiKey: {ID: "dev"},
+		cfg.APIKey: {ID: "dev"},
 	})
 	auth := app.NewAuthenticator(store)
 	router := httpapi.NewRouter(auth)
 
-	addr := ":8080"
-	log.Printf("gateway listening on %s", addr)
-	if err := http.ListenAndServe(addr, router); err != nil {
-		log.Fatal(err)
+	srv := &http.Server{
+		Addr:              cfg.Addr,
+		Handler:           router,
+		ReadHeaderTimeout: 5 * time.Second,
 	}
+
+	ctx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	// The buffer lets the goroutine send and exit even if nobody reads errCh anymore.
+	errCh := make(chan error, 1)
+	go func() {
+		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			errCh <- err
+		}
+	}()
+
+	slog.Info("gateway listening", "addr", cfg.Addr)
+	select {
+	case err := <-errCh:
+		return fmt.Errorf("serve: %w", err)
+	case <-ctx.Done():
+		slog.Info("shutting down")
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), cfg.ShutdownTimeout)
+		defer cancel()
+		if err := srv.Shutdown(shutdownCtx); err != nil {
+			return fmt.Errorf("shutdown: %w", err)
+		}
+	}
+	slog.Info("gateway stopped")
+	return nil
 }
